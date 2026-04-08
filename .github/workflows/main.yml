@@ -1,99 +1,96 @@
-name: Auto Build New Release
+name: Auto Build New Release (Ultra Fast)
 
 on:
   schedule:
-    - cron: '0 */6 * * *' # 6 tiếng kiểm tra một lần
-  workflow_dispatch: # Cho phép bấm chạy tay
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
 
 jobs:
-  check-and-build:
+  check-version:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write # Cần quyền để ghi file version vào repo
-      packages: write # Cần quyền để push lên GHCR
-
+    outputs:
+      build_needed: ${{ steps.check.outputs.build_needed }}
+      tag: ${{ steps.upstream.outputs.tag }}
     steps:
-      # 1. Checkout repo của bạn (để lấy Dockerfile và file latest_version.txt)
-      - name: Checkout your repo
-        uses: actions/checkout@v4
-
-      # 2. Lấy tag mới nhất từ repo gốc
-      - name: Get latest upstream tag
-        id: upstream
+      - uses: actions/checkout@v4
+      - id: upstream
+        run: echo "tag=$(curl -s https://api.github.com/repos/openchamber/openchamber/releases/latest | jq -r .tag_name)" >> $GITHUB_OUTPUT
+      - id: local_ver
         run: |
-          LATEST_TAG=$(curl -s https://api.github.com/repos/openchamber/openchamber/releases/latest | jq -r .tag_name)
-          echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
-
-      # 3. Đọc phiên bản cũ đã build từ file trong repo của bạn
-      - name: Read last built version
-        id: local_ver
-        run: |
-          if [ -f latest_version.txt ]; then
-            LAST_TAG=$(cat latest_version.txt)
-          else
-            LAST_TAG="none"
-          fi
+          LAST_TAG=$(cat latest_version.txt 2>/dev/null || echo "none")
           echo "last_tag=$LAST_TAG" >> $GITHUB_OUTPUT
-
-      # 4. So sánh: Nếu tag mới khác tag cũ thì mới chạy build
-      - name: Check if build is needed
-        id: check
+      - id: check
         run: |
           if [ "${{ steps.upstream.outputs.tag }}" != "${{ steps.local_ver.outputs.last_tag }}" ]; then
             echo "build_needed=true" >> $GITHUB_OUTPUT
-            echo "Tiến hành build phiên bản mới: ${{ steps.upstream.outputs.tag }}"
           else
             echo "build_needed=false" >> $GITHUB_OUTPUT
-            echo "Không có phiên bản mới."
           fi
 
-      # CÁC BƯỚC DƯỚI ĐÂY CHỈ CHẠY NẾU build_needed == true
-      
-      - name: Checkout OpenChamber source code
-        if: steps.check.outputs.build_needed == 'true'
+  # JOB BUILD CHÍNH - Chạy song song AMD64 và ARM64
+  build:
+    needs: check-version
+    if: needs.check-version.outputs.build_needed == 'true'
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest        # Máy AMD64
+            arch: amd64
+          - os: ubuntu-24.04-arm     # Máy ARM64 (Dùng đúng cái bạn vừa tìm thấy!)
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout Source
         uses: actions/checkout@v4
         with:
           repository: openchamber/openchamber
-          ref: ${{ steps.upstream.outputs.tag }}
-          path: openchamber-src
-
-      - name: Set up QEMU
-        if: steps.check.outputs.build_needed == 'true'
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        if: steps.check.outputs.build_needed == 'true'
-        uses: docker/setup-buildx-action@v3
-
+          ref: ${{ needs.check-version.outputs.tag }}
+      
       - name: Log in to GHCR
-        if: steps.check.outputs.build_needed == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push
-        if: steps.check.outputs.build_needed == 'true'
+      # Build và push theo từng kiến trúc riêng biệt
+      - name: Build and push by arch
         uses: docker/build-push-action@v5
         with:
-          context: ./openchamber-src
-          file: ./Dockerfile 
+          context: .
+          # Trỏ về Dockerfile trong repo của bạn (cần bước checkout config nữa nếu file nằm ở repo khác)
+          file: Dockerfile 
           push: true
-          platforms: linux/amd64,linux/arm64
-          tags: |
-            ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ steps.upstream.outputs.tag }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          platforms: linux/${{ matrix.arch }}
+          tags: ghcr.io/${{ github.repository }}:${{ needs.check-version.outputs.tag }}-${{ matrix.arch }}
 
-      # 5. Cập nhật lại file latest_version.txt vào repo của bạn
-      - name: Update version file in repo
-        if: steps.check.outputs.build_needed == 'true'
+  # JOB CUỐI: Gộp 2 bản lại thành 1 Manifest duy nhất (Để người dùng chỉ cần pull tag :latest)
+  create-manifest:
+    needs: [check-version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Create and push manifest
         run: |
-          echo "${{ steps.upstream.outputs.tag }}" > latest_version.txt
+          TAG=${{ needs.check-version.outputs.tag }}
+          REPO=ghcr.io/${{ github.repository }}
+          docker buildx create --use
+          docker buildx imagetools create -t $REPO:latest -t $REPO:$TAG \
+            $REPO:$TAG-amd64 \
+            $REPO:$TAG-arm64
+
+      - name: Update version file
+        uses: actions/checkout@v4
+      - run: |
+          echo "${{ needs.check-version.outputs.tag }}" > latest_version.txt
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add latest_version.txt
-          git commit -m "Update build version to ${{ steps.upstream.outputs.tag }}"
+          git commit -m "Update build version to ${{ needs.check-version.outputs.tag }}"
           git push
