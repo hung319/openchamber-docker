@@ -3,7 +3,7 @@ FROM debian:stable-slim
 # Copy uv package manager (Dùng để cài python gọn nhất)
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
-# Khai báo môi trường tập trung (Chỉ giữ lại những biến cốt lõi)
+# Khai báo môi trường tập trung
 ENV PATH="/usr/local/bin:/usr/bin:${PATH}" \
     OPENCHAMBER_PORT=8080 \
     OPENCHAMBER_HOST=0.0.0.0 \
@@ -24,25 +24,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Cấu hình wrapper script cho opencode (NPM cài vào /usr/local/bin)
+# Cấu hình wrapper script cho opencode
 RUN mv /usr/local/bin/opencode /usr/local/bin/opencode-original \
     && echo -e '#!/bin/bash\nrm -rf /root/.cache/opencode/package.json 2>/dev/null || true\nexec /usr/local/bin/opencode-original "$@"' > /usr/local/bin/opencode \
     && chmod +x /usr/local/bin/opencode
 
-# Cập nhật Entrypoint (Giữ nguyên cấu trúc daemon + logs của bạn)
+# Cập nhật Entrypoint: Ép chạy Foreground, bỏ chế độ chạy ngầm
 RUN cat <<'EOF' > /usr/local/bin/entrypoint && chmod +x /usr/local/bin/entrypoint
 #!/bin/bash
 set -e
 
-# Khởi chạy openchamber ở chế độ nền
-openchamber serve \
+# Chạy trực tiếp tiến trình chính bằng exec kết hợp cờ --foreground
+exec openchamber serve \
     --port "${OPENCHAMBER_PORT}" \
     --host "${OPENCHAMBER_HOST}" \
+    --foreground \
     ${OPENCHAMBER_UI_PASSWORD:+--ui-password "$OPENCHAMBER_UI_PASSWORD"}
-
-# Chờ 3s rồi attach vào logs
-sleep 3
-exec openchamber logs
 EOF
 
 EXPOSE 8080
