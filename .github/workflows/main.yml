@@ -1,69 +1,50 @@
-name: Auto Build New Release (Ultra Fast)
+name: Auto Build NPM Release (Ultra Fast)
 
 on:
   schedule:
-    - cron: '0 */6 * * *'
-  workflow_dispatch: # Chạy thủ công bằng tay
+    - cron: '0 */12 * * *' # Chạy tự động 2 lần 1 ngày
+  workflow_dispatch: # Bấm phát chạy luôn
 
 jobs:
   check-version:
-    # Chỉ chạy job này nếu là chạy tự động (schedule)
-    # Nếu chạy thủ công (workflow_dispatch), job này sẽ bị bỏ qua (skipped)
-    if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
     outputs:
       build_needed: ${{ steps.check.outputs.build_needed }}
-      tag: ${{ steps.upstream.outputs.tag }}
+      tag: ${{ steps.npm_ver.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-      - id: upstream
-        run: echo "tag=$(curl -s https://api.github.com/repos/openchamber/openchamber/releases/latest | jq -r .tag_name)" >> $GITHUB_OUTPUT
+      
+      # Lấy version mới nhất trực tiếp từ kho NPM
+      - id: npm_ver
+        run: echo "version=$(npm show @openchamber/web version)" >> $GITHUB_OUTPUT
+      
       - id: local_ver
         run: |
-          LAST_TAG=$(cat latest_version.txt 2>/dev/null || echo "none")
+          LAST_TAG=$(cat latest_npm_version.txt 2>/dev/null || echo "none")
           echo "last_tag=$LAST_TAG" >> $GITHUB_OUTPUT
+          
       - id: check
         run: |
-          if [ "${{ steps.upstream.outputs.tag }}" != "${{ steps.local_ver.outputs.last_tag }}" ]; then
+          # Nếu chạy bằng tay (workflow_dispatch) -> Luôn luôn build
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] || [ "${{ steps.npm_ver.outputs.version }}" != "${{ steps.local_ver.outputs.last_tag }}" ]; then
             echo "build_needed=true" >> $GITHUB_OUTPUT
           else
             echo "build_needed=false" >> $GITHUB_OUTPUT
           fi
 
   build:
-    # Điều kiện logic: 
-    # 1. Nếu chạy thủ công (workflow_dispatch) -> CHẠY LUÔN.
-    # 2. Nếu chạy tự động (schedule) -> Chỉ chạy nếu check-version báo build_needed=true.
     needs: check-version
-    if: |
-      always() && 
-      (github.event_name == 'workflow_dispatch' || 
-      (needs.check-version.result == 'success' && needs.check-version.outputs.build_needed == 'true'))
+    if: needs.check-version.outputs.build_needed == 'true'
     strategy:
       matrix:
         include:
           - os: ubuntu-latest        # AMD64
             arch: amd64
-          - os: ubuntu-24.04-arm     # ARM64 (Tận dụng máy chủ ARM bạn vừa tìm thấy)
+          - os: ubuntu-24.04-arm     # ARM64
             arch: arm64
     runs-on: ${{ matrix.os }}
     steps:
-      # Lấy tag: Nếu chạy thủ công thì lấy bản latest từ API, nếu tự động thì lấy từ job check-version
-      - name: Get Target Tag
-        id: vars
-        run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            TAG=$(curl -s https://api.github.com/repos/openchamber/openchamber/releases/latest | jq -r .tag_name)
-          else
-            TAG=${{ needs.check-version.outputs.tag }}
-          fi
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-
-      - name: Checkout Source
-        uses: actions/checkout@v4
-        with:
-          repository: openchamber/openchamber
-          ref: ${{ steps.vars.outputs.tag }}
+      - uses: actions/checkout@v4
       
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -78,7 +59,7 @@ jobs:
           context: .
           push: true
           platforms: linux/${{ matrix.arch }}
-          tags: ghcr.io/${{ github.repository }}:${{ steps.vars.outputs.tag }}-${{ matrix.arch }}
+          tags: ghcr.io/${{ github.repository }}:${{ needs.check-version.outputs.tag }}-${{ matrix.arch }}
 
   create-manifest:
     needs: [check-version, build]
@@ -91,16 +72,10 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      
-      - name: Get Target Tag (Repeat for manifest)
-        id: vars
-        run: |
-          TAG=$(curl -s https://api.github.com/repos/openchamber/openchamber/releases/latest | jq -r .tag_name)
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-      
+          
       - name: Create and push manifest
         run: |
-          TAG=${{ steps.vars.outputs.tag }}
+          TAG=${{ needs.check-version.outputs.tag }}
           REPO=ghcr.io/${{ github.repository }}
           docker buildx create --use
           docker buildx imagetools create -t $REPO:latest -t $REPO:$TAG \
@@ -109,13 +84,13 @@ jobs:
 
       - name: Update version file
         uses: actions/checkout@v4
-        if: github.event_name == 'schedule' # Chỉ cập nhật file text khi chạy tự động
+        if: github.event_name == 'schedule'
       - name: Commit version
         if: github.event_name == 'schedule'
         run: |
-          echo "${{ steps.vars.outputs.tag }}" > latest_version.txt
+          echo "${{ needs.check-version.outputs.tag }}" > latest_npm_version.txt
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add latest_version.txt
-          git commit -m "Update build version to ${{ steps.vars.outputs.tag }}"
+          git add latest_npm_version.txt
+          git commit -m "Update build version to ${{ needs.check-version.outputs.tag }}"
           git push
