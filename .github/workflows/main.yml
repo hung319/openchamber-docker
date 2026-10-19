@@ -60,6 +60,8 @@ jobs:
           push: true
           platforms: linux/${{ matrix.arch }}
           tags: ghcr.io/${{ github.repository }}:${{ needs.check-version.outputs.tag }}-${{ matrix.arch }}
+          build-args: |
+            OPENCHAMBER_VERSION=${{ needs.check-version.outputs.tag }}
 
   create-manifest:
     needs: [check-version, build]
