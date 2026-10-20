@@ -36,10 +36,11 @@ if [ -f "$HOME/.ssh/id_ed25519.pub" ]; then
     cat "$HOME/.ssh/id_ed25519.pub"
 fi
 
-# Xoá cache package.json của opencode mỗi lần boot để opencode resolve đúng
-# version đã cài trong image (tránh cache stale khi volume /root/.cache/opencode
-# tồn tại qua các lần upgrade image)
-rm -rf "$HOME/.cache/opencode/package.json" 2>/dev/null || true
+# LƯU Ý (core opencode v2): KHÔNG xoá cache mỗi boot nữa. Từ core v2 layout cache
+# plugin là ~/.cache/opencode/npm/<pkg>@<spec>/<generation>/, tự re-resolve tag
+# (@latest...) và có GC riêng (giữ 2 generation gần nhất, xoá mục cũ >7 ngày).
+# Xoá gì thêm mỗi boot chỉ làm plugin re-download lại từ đầu, vô ích.
+# (Đường cũ ~/.cache/opencode/package.json chỉ còn ở core v1.x - đã bỏ.)
 
 # Tích hợp OH_MY_OPENCODE nếu người dùng bật biến môi trường
 if [ "${OH_MY_OPENCODE:-false}" = "true" ]; then

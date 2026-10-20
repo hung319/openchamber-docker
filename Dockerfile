@@ -27,7 +27,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 COPY --from=cloudflare/cloudflared:latest /usr/local/bin/cloudflared /usr/local/bin/cloudflared
 
 # Khai báo môi trường tập trung (kèm các biến định tuyến Browser/Chromium)
-ENV PATH="/usr/local/bin:/usr/bin:${PATH}" \
+ENV PATH="/root/.local/bin:/usr/local/bin:/usr/bin:${PATH}" \
     OPENCHAMBER_PORT=8080 \
     OPENCHAMBER_HOST=0.0.0.0 \
     NODE_ENV=production \
@@ -48,6 +48,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl git ssh build-essential tini procps unzip psmisc \
         chromium fonts-liberation fonts-noto-color-emoji \
     && uv python install 3.12 \
+    && ln -sf /root/.local/share/uv/python/cpython-3.12-linux-*/bin/python3.12 /usr/local/bin/python3 \
+    && ln -sf /usr/local/bin/python3 /usr/local/bin/python \
     && npm install --global --no-audit --no-fund \
         "opencode-ai@${OPENCODE_VERSION}" \
         "@openchamber/web@${OPENCHAMBER_VERSION}" \
@@ -61,7 +63,7 @@ RUN printf '#!/bin/sh\nexec /usr/bin/chromium --no-sandbox --disable-dev-shm-usa
     && ln -s /usr/local/bin/chromium /usr/local/bin/google-chrome \
     && ln -s /usr/local/bin/chromium /usr/local/bin/chrome
 
-# Entrypoint: foreground + SSH key + OPENCODE_CONFIG_DIR + cache cleanup + OH_MY_OPENCODE
+# Entrypoint: foreground + SSH key + OPENCODE_CONFIG_DIR + OH_MY_OPENCODE
 COPY entrypoint.sh /usr/local/bin/entrypoint
 RUN chmod +x /usr/local/bin/entrypoint
 
