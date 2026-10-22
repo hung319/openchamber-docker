@@ -7,12 +7,18 @@ agent [OpenCode](https://opencode.ai) + Chromium, đóng gói từ bản npm ch�
 ```bash
 docker run -d --name openchamber \
   -p 8080:8080 \
+  -v openchamber-config:/root/.config/openchamber \
   -v opencode-config:/root/.config/opencode \
   -v opencode-data:/root/.local/share/opencode \
+  -v openchamber-ssh:/root/.ssh \
   ghcr.io/hung319/openchamber-docker:latest
 ```
 
-Mở <http://localhost:8080> — đăng nhập bằng `changeme` (đổi được, xem [Biến môi trường](#biến-môi-trường)).
+Mở <http://localhost:8080> — đăng nhập bằng `changeme` (pass mặc định của image; đổi được, xem
+[UI password](#ui-password)).
+
+Thêm `-e OPENCHAMBER_UI_PASSWORD=...` nếu muốn đặt pass riêng, và nhớ đổi pass mặc định trước khi
+expose ra ngoài mạng.
 
 ---
 
