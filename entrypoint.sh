@@ -14,10 +14,31 @@ export OPENCHAMBER_HOST="${OPENCHAMBER_HOST:-0.0.0.0}"
 export OPENCHAMBER_PORT="${OPENCHAMBER_PORT:-8080}"
 export OPENCODE_CONFIG_DIR="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}"
 
+# OpenCode agent: binary được bake vào /usr/bin (nằm trong image layer, KHÔNG
+# nằm trong volume ~/.opencode) nên image đi đâu thì agent đi theo đó.
+# OPENCODE_BINARY trỏ thẳng vào đó: thứ tự resolve của upstream là
+# OPENCODE_BINARY -> bundled -> PATH -> ~/.opencode/bin, nên nếu chỉ dựa vào
+# PATH thì một binary cũ nằm trước trong PATH sẽ thắng.
+export OPENCODE_BINARY="${OPENCODE_BINARY:-/usr/bin/opencode}"
+
 # UI password: hỗ trợ cả OPENCHAMBER_UI_PASSWORD và legacy UI_PASSWORD (tương thích upstream)
 if [ -z "${OPENCHAMBER_UI_PASSWORD:-}" ] && [ -n "${UI_PASSWORD:-}" ]; then
     OPENCHAMBER_UI_PASSWORD="$UI_PASSWORD"
     export OPENCHAMBER_UI_PASSWORD
+fi
+
+# Pass mặc định: image bind 0.0.0.0 nên OpenChamber BẮT BUỘC phải có UI
+# password, nếu không server từ chối khởi động (exit code 4):
+#   "OpenChamber refuses to bind to 0.0.0.0 without UI authentication."
+# -> đặt sẵn một pass để `docker run` không cần config gì cũng lên được.
+# Thứ tự ưu tiên: OPENCHAMBER_UI_PASSWORD > UI_PASSWORD (legacy) > mặc định.
+# Lưu ý: default nằm ở runtime (không phải ENV của image) để không chặn
+# nhánh legacy UI_PASSWORD ở trên.
+DEFAULT_UI_PASSWORD="changeme"
+if [ -z "${OPENCHAMBER_UI_PASSWORD:-}" ]; then
+    OPENCHAMBER_UI_PASSWORD="$DEFAULT_UI_PASSWORD"
+    export OPENCHAMBER_UI_PASSWORD
+    echo "[entrypoint] Using DEFAULT UI password '$DEFAULT_UI_PASSWORD' - set -e OPENCHAMBER_UI_PASSWORD=... to change it"
 fi
 
 # SSH key cho các thao tác git/ssh của agent (lần đầu boot sẽ tự sinh)
@@ -56,6 +77,15 @@ fi
 # Nếu người dùng truyền custom command thì exec command đó
 if [ "$#" -gt 0 ]; then
     exec "$@"
+fi
+
+# Log version agent để debug nhanh: OpenChamber hard-require OpenCode >= 2.0.20,
+# thiếu bản đó thì UI lên được nhưng agent chết (log "Continuing without
+# OpenCode integration...").
+if [ -x "$OPENCODE_BINARY" ]; then
+    echo "[entrypoint] OpenCode: $("$OPENCODE_BINARY" --version 2>/dev/null || echo unknown) ($OPENCODE_BINARY)"
+else
+    echo "[entrypoint] WARNING: OpenCode binary not found at $OPENCODE_BINARY - agent features will not work"
 fi
 
 # Chạy server trực tiếp ở foreground

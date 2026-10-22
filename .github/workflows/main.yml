@@ -11,22 +11,45 @@ jobs:
     outputs:
       build_needed: ${{ steps.check.outputs.build_needed }}
       tag: ${{ steps.npm_ver.outputs.version }}
+      opencode_tag: ${{ steps.opencode_ver.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-      
+
       # Lấy version mới nhất trực tiếp từ kho NPM
       - id: npm_ver
         run: echo "version=$(npm show @openchamber/web version)" >> $GITHUB_OUTPUT
-      
+
+      # OpenCode 2.x đổi tên package: `@opencode/cli` (dòng v1 là `opencode-ai`).
+      # Phải pin version này để build tái lập được, nếu không image sẽ nhảy
+      # theo `latest` của agent mỗi lần build.
+      - id: opencode_ver
+        run: echo "version=$(npm show @opencode/cli version)" >> $GITHUB_OUTPUT
+
       - id: local_ver
         run: |
-          LAST_TAG=$(cat latest_npm_version.txt 2>/dev/null || echo "none")
-          echo "last_tag=$LAST_TAG" >> $GITHUB_OUTPUT
-          
+          FILE=latest_npm_version.txt
+          LAST_OPENCHAMBER=$(grep -E '^openchamber=' "$FILE" 2>/dev/null | tail -1 | cut -d= -f2 || true)
+          LAST_OPENCODE=$(grep -E '^opencode=' "$FILE" 2>/dev/null | tail -1 | cut -d= -f2 || true)
+          echo "last_openchamber=$LAST_OPENCHAMBER" >> $GITHUB_OUTPUT
+          echo "last_opencode=$LAST_OPENCODE" >> $GITHUB_OUTPUT
+
       - id: check
         run: |
-          # Nếu chạy bằng tay (workflow_dispatch) -> Luôn luôn build
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ] || [ "${{ steps.npm_ver.outputs.version }}" != "${{ steps.local_ver.outputs.last_tag }}" ]; then
+          set -euo pipefail
+          LAST_OPENCHAMBER="${{ steps.local_ver.outputs.last_openchamber }}"
+          LAST_OPENCODE="${{ steps.local_ver.outputs.last_opencode }}"
+          NEW_OPENCHAMBER="${{ steps.npm_ver.outputs.version }}"
+          NEW_OPENCODE="${{ steps.opencode_ver.outputs.version }}"
+
+          # Nếu chạy bằng tay (workflow_dispatch) -> Luôn luôn build.
+          # Ngoài ra build lại khi EITHER OpenChamber hay OpenCode đổi version:
+          # agent đổi bản cũng làm image đổi, không build lại thì user bị kẹt
+          # ở agent cũ (và v1 là bản OpenChamber từ chối).
+          # File version đổi từ "1 dòng version trần" sang "key=value":
+          # thiếu key nghĩa là chưa từng pin -> build một lần cho đúng format.
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] \
+            || [ "$NEW_OPENCHAMBER" != "$LAST_OPENCHAMBER" ] \
+            || [ "$NEW_OPENCODE" != "$LAST_OPENCODE" ]; then
             echo "build_needed=true" >> $GITHUB_OUTPUT
           else
             echo "build_needed=false" >> $GITHUB_OUTPUT
@@ -45,7 +68,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -62,6 +85,7 @@ jobs:
           tags: ghcr.io/${{ github.repository }}:${{ needs.check-version.outputs.tag }}-${{ matrix.arch }}
           build-args: |
             OPENCHAMBER_VERSION=${{ needs.check-version.outputs.tag }}
+            OPENCODE_VERSION=${{ needs.check-version.outputs.opencode_tag }}
 
   create-manifest:
     needs: [check-version, build]
@@ -74,7 +98,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-          
+
       - name: Create and push manifest
         run: |
           TAG=${{ needs.check-version.outputs.tag }}
@@ -90,7 +114,10 @@ jobs:
       - name: Commit version
         if: github.event_name == 'schedule'
         run: |
-          echo "${{ needs.check-version.outputs.tag }}" > latest_npm_version.txt
+          {
+            echo "openchamber=${{ needs.check-version.outputs.tag }}"
+            echo "opencode=${{ needs.check-version.outputs.opencode_tag }}"
+          } > latest_npm_version.txt
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add latest_npm_version.txt
