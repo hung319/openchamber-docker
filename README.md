@@ -26,6 +26,7 @@ Thin Docker image for [OpenChamber](https://github.com/anomalyco/openchamber) �
 - [Extras](#en-extras)
 - [Building from source](#en-build)
 - [Why the OpenCode binary lives in /usr/bin](#en-why-usrbin)
+- [Updating OpenCode](#en-update-opencode)
 - [Why Node 24 and OpenCode v2 are required](#en-why-node24)
 - [Troubleshooting](#en-troubleshooting)
 
@@ -102,7 +103,7 @@ opencode=2.1.2
 | `OPENCHAMBER_LAN_URL` | — | URL users open to reach the UI from another machine (upstream ships this for Docker: a container cannot see the host IP) |
 | `OPENCHAMBER_ALLOW_UNAUTHENTICATED_LAN` | `false` | **Not recommended** — allows binding to the LAN with no UI auth |
 | `OPENCODE_CONFIG_DIR` | `/root/.config/opencode` | OpenCode config directory |
-| `OPENCODE_BINARY` | `/usr/bin/opencode` | Path to the OpenCode agent binary (already baked into the image) |
+| `OPENCODE_BINARY` | `/usr/bin/opencode` | Path to the OpenCode agent binary. Keep the default: the entrypoint resolves it to `~/.opencode/bin/opencode` (a symlink to `/usr/bin/opencode`) so `opencode upgrade` can detect the install method. Override only for a custom binary. |
 | `OH_MY_OPENCODE` | `false` | Set `true` to install `oh-my-opencode` at boot (needs network) |
 
 ### UI password
@@ -126,7 +127,12 @@ Mount these to keep configuration, sessions and logins:
 | `/root/.ssh` | SSH key for the agent (generated at boot if missing) |
 
 The agent binary itself is in **no** volume — it is baked straight into `/usr/bin` in the image
-layer (see [why](#en-why-usrbin)).
+layer (see [why](#en-why-usrbin)). If you update OpenCode from the UI, add an optional volume for
+`/root/.opencode` so the upgraded binary survives container recreation:
+
+```bash
+-v opencode-bin:/root/.opencode
+```
 
 ---
 
@@ -242,6 +248,8 @@ HOME=/usr VERSION="${OPENCODE_VERSION}" bash /tmp/opencode-install.sh --no-modif
 mv /usr/.opencode/bin/opencode  /usr/bin/opencode
 mv /usr/.opencode/bin/opencode2 /usr/bin/opencode2
 rm -rf /usr/.opencode
+mkdir -p "$HOME/.opencode/bin"                                   # for `opencode upgrade`
+ln -sfn /usr/bin/opencode "$HOME/.opencode/bin/opencode"
 ```
 
 - The installer has **no** env var to change the install folder — both v1 and v2 hardcode
@@ -251,9 +259,44 @@ rm -rf /usr/.opencode
 - The result is a **real file** in the image layer (204MB), not a symlink into an npm tree.
   A global npm install (`npm i -g @opencode/cli`) pulls *all* optionalDependencies
   (`-x64`, `-x64-musl`, `-x64-baseline`, `-x64-baseline-musl`) → **~815MB** image.
-- `OPENCODE_BINARY=/usr/bin/opencode` is set because upstream resolves binaries in the order
+- `OPENCODE_BINARY` is set because upstream resolves binaries in the order
   `OPENCODE_BINARY → bundled → PATH → ~/.opencode/bin` — relying on `PATH` alone lets a stale
   binary that comes first in `PATH` win.
+- A symlink `~/.opencode/bin/opencode → /usr/bin/opencode` is also created (and re-created by the
+  entrypoint when `$HOME` is a volume). `opencode upgrade` detects the install method from the
+  **path the binary was launched from**; only `~/.opencode/bin/opencode` matches `curl`. Without
+  the symlink the UI Update button fails with
+  `Could not detect the installation method`.
+
+---
+
+## Updating OpenCode
+
+<a id="en-update-opencode"></a>
+
+The Update button in the OpenChamber UI now works, and so does the CLI:
+
+```bash
+docker exec -it openchamber opencode upgrade       # auto-detects the curl install
+# or pin a version / force the method:
+docker exec -it openchamber opencode upgrade 2.1.4
+docker exec -it openchamber opencode upgrade --method curl
+```
+
+The new binary is written to `/root/.opencode/bin/opencode`, and the entrypoint launches OpenCode
+from that path, so the upgrade takes effect as soon as OpenCode is reloaded (the UI offers
+"Reload OpenCode"; otherwise restart the container). `/usr/bin/opencode` keeps the version baked
+into the image.
+
+`/root/.opencode` is **not** a volume by default, so an in-container upgrade is lost when the
+container is recreated. Mount it if you want upgrades to stick:
+
+```bash
+-v opencode-bin:/root/.opencode
+```
+
+Alternatively skip the UI and pull a newer image — the [CI workflow](.github/workflows/main.yml)
+rebuilds whenever `@openchamber/web` or `@opencode/cli` publishes a release.
 
 ---
 
@@ -310,8 +353,20 @@ survives restarts.
 
 ```bash
 docker logs openchamber 2>&1 | grep OpenCode
-# [entrypoint] OpenCode: opencode v2.1.2 (/usr/bin/opencode)
+# [entrypoint] OpenCode: opencode v2.1.4 (/root/.opencode/bin/opencode)
 ```
+
+**`OpenCode CLI upgrade failed. Run opencode upgrade in a terminal for details.`**
+The binary was launched from a path that `opencode upgrade` does not recognize as the `curl`
+install (for example `/usr/bin/opencode` directly). Use the installer-compatible path — this repo
+creates it automatically:
+
+```bash
+docker exec -it openchamber sh -lc 'mkdir -p ~/.opencode/bin && ln -sfn /usr/bin/opencode ~/.opencode/bin/opencode && ~/.opencode/bin/opencode upgrade'
+```
+
+If it still fails, force the method: `opencode upgrade --method curl`. If the binary lives outside
+`~/.opencode/bin` and you cannot move it, pass `--method` matching how it was installed.
 
 ---
 
@@ -342,6 +397,7 @@ Upstream: <https://github.com/anomalyco/openchamber>
 - [Tính năng phụ](#vi-extras)
 - [Build image từ source](#vi-build)
 - [Vì sao binary OpenCode nằm ở /usr/bin](#vi-why-usrbin)
+- [Cập nhật OpenCode](#vi-update-opencode)
 - [Vì sao cần Node 24 và OpenCode v2](#vi-why-node24)
 - [Troubleshooting](#vi-troubleshooting)
 
@@ -418,7 +474,7 @@ opencode=2.1.2
 | `OPENCHAMBER_LAN_URL` | — | URL để user mở UI từ máy khác (upstream dành riêng cho Docker: container không thấy IP host) |
 | `OPENCHAMBER_ALLOW_UNAUTHENTICATED_LAN` | `false` | **Không nên bật** — cho phép bind LAN mà không cần UI auth |
 | `OPENCODE_CONFIG_DIR` | `/root/.config/opencode` | Thư mục config OpenCode |
-| `OPENCODE_BINARY` | `/usr/bin/opencode` | Đường dẫn binary agent (đã bake sẵn trong image) |
+| `OPENCODE_BINARY` | `/usr/bin/opencode` | Đường dẫn binary agent. Cứ để mặc định: entrypoint sẽ resolve sang `~/.opencode/bin/opencode` (symlink tới `/usr/bin/opencode`) để `opencode upgrade` nhận diện đúng method. Chỉ override khi dùng binary riêng. |
 | `OH_MY_OPENCODE` | `false` | Set `true` để cài `oh-my-opencode` lúc boot (cần mạng) |
 
 ### UI password
@@ -442,7 +498,12 @@ Nên mount để giữ config, phiên làm việc và đăng nhập:
 | `/root/.ssh` | SSH key cho agent (sinh lúc boot nếu chưa có) |
 
 Binary agent **không** nằm trong volume nào — nó được bake thẳng vào `/usr/bin` trong image layer
-(xem [giải thích](#vi-why-usrbin)).
+(xem [giải thích](#vi-why-usrbin)). Nếu bạn update OpenCode từ UI, nên thêm volume tuỳ chọn cho
+`/root/.opencode` để binary mới không mất khi tạo lại container:
+
+```bash
+-v opencode-bin:/root/.opencode
+```
 
 ---
 
@@ -555,6 +616,8 @@ HOME=/usr VERSION="${OPENCODE_VERSION}" bash /tmp/opencode-install.sh --no-modif
 mv /usr/.opencode/bin/opencode  /usr/bin/opencode
 mv /usr/.opencode/bin/opencode2 /usr/bin/opencode2
 rm -rf /usr/.opencode
+mkdir -p "$HOME/.opencode/bin"                                   # cho `opencode upgrade`
+ln -sfn /usr/bin/opencode "$HOME/.opencode/bin/opencode"
 ```
 
 - Installer **không có** env riêng để đổi thư mục cài — cả bản v1 lẫn v2 đều hardcode
@@ -566,7 +629,41 @@ rm -rf /usr/.opencode
   (`-x64`, `-x64-musl`, `-x64-baseline`, `-x64-baseline-musl`) → **~815MB** image.
 - `OPENCODE_BINARY=/usr/bin/opencode` được set sẵn vì thứ tự resolve của upstream là
   `OPENCODE_BINARY → bundled → PATH → ~/.opencode/bin` — nếu chỉ dựa vào PATH thì một binary cũ
-  nằm trước sẽ thắng.
+  nằm trước sẽ thắng. (Entrypoint đổi sang `~/.opencode/bin/opencode` để upgrade hoạt động, xem
+  bên dưới.)
+- Kèm theo một symlink `~/.opencode/bin/opencode → /usr/bin/opencode` (entrypoint tạo lại nếu
+  `$HOME` là volume). `opencode upgrade` dò installation method theo **đường dẫn binary được
+  gọi**; chỉ `~/.opencode/bin/opencode` mới khớp method `curl`. Thiếu symlink thì nút Update
+  trên UI báo `Could not detect the installation method`.
+
+---
+
+## Cập nhật OpenCode
+
+<a id="vi-update-opencode"></a>
+
+Nút Update trên UI OpenChamber giờ đã hoạt động, CLI cũng vậy:
+
+```bash
+docker exec -it openchamber opencode upgrade       # tự nhận method curl
+# hoặc ghim version / ép method:
+docker exec -it openchamber opencode upgrade 2.1.4
+docker exec -it openchamber opencode upgrade --method curl
+```
+
+Binary mới được ghi vào `/root/.opencode/bin/opencode`, và entrypoint launch OpenCode từ đúng
+đường dẫn đó, nên bản mới có hiệu lực ngay khi reload OpenCode (UI có nút "Reload OpenCode";
+không thì restart container). `/usr/bin/opencode` vẫn giữ bản bake trong image.
+
+`/root/.opencode` mặc định **không** phải volume, nên upgrade trong container sẽ mất khi tạo lại
+container. Mount volume nếu muốn giữ:
+
+```bash
+-v opencode-bin:/root/.opencode
+```
+
+Hoặc bỏ qua UI và pull image mới — [workflow CI](.github/workflows/main.yml) tự build lại mỗi khi
+`@openchamber/web` hoặc `@opencode/cli` ra bản mới.
 
 ---
 
@@ -622,8 +719,18 @@ restart.
 
 ```bash
 docker logs openchamber 2>&1 | grep OpenCode
-# [entrypoint] OpenCode: opencode v2.1.2 (/usr/bin/opencode)
+# [entrypoint] OpenCode: opencode v2.1.4 (/root/.opencode/bin/opencode)
 ```
+
+**`OpenCode CLI upgrade failed. Run opencode upgrade in a terminal for details.`**
+Binary được gọi từ đường dẫn mà `opencode upgrade` không nhận ra là bản cài `curl` (ví dụ gọi
+thẳng `/usr/bin/opencode`). Dùng đường dẫn tương thích installer — repo này tạo sẵn:
+
+```bash
+docker exec -it openchamber sh -lc 'mkdir -p ~/.opencode/bin && ln -sfn /usr/bin/opencode ~/.opencode/bin/opencode && ~/.opencode/bin/opencode upgrade'
+```
+
+Nếu vẫn lỗi, ép method: `opencode upgrade --method curl`.
 
 ---
 

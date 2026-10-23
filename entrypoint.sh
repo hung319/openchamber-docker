@@ -14,12 +14,33 @@ export OPENCHAMBER_HOST="${OPENCHAMBER_HOST:-0.0.0.0}"
 export OPENCHAMBER_PORT="${OPENCHAMBER_PORT:-8080}"
 export OPENCODE_CONFIG_DIR="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}"
 
-# OpenCode agent: binary được bake vào /usr/bin (nằm trong image layer, KHÔNG
-# nằm trong volume ~/.opencode) nên image đi đâu thì agent đi theo đó.
-# OPENCODE_BINARY trỏ thẳng vào đó: thứ tự resolve của upstream là
-# OPENCODE_BINARY -> bundled -> PATH -> ~/.opencode/bin, nên nếu chỉ dựa vào
-# PATH thì một binary cũ nằm trước trong PATH sẽ thắng.
-export OPENCODE_BINARY="${OPENCODE_BINARY:-/usr/bin/opencode}"
+# OpenCode agent: binary thật được bake vào /usr/bin (nằm trong image layer,
+# KHÔNG nằm trong volume ~/.opencode) nên image đi đâu thì agent đi theo đó.
+#
+# Nhưng đường dẫn launch PHẢI là $HOME/.opencode/bin/opencode:
+#   `opencode upgrade` (và nút Update trên UI, vì nó chạy `opencode upgrade`
+#   không kèm --method) tự dò installation method theo đường dẫn của binary.
+#   Chỉ $HOME/.opencode/bin/opencode khớp method `curl`; gọi /usr/bin/opencode
+#   sẽ báo "Could not detect the installation method".
+#   Image đã bake symlink $HOME/.opencode/bin/opencode -> /usr/bin/opencode.
+#   Nếu $HOME là volume che mất symlink đó (hoặc HOME khác lúc build), tạo lại
+#   ở đây. Nếu đã có file thật (từ lần upgrade trước) thì KHÔNG ghi đè.
+OPENCODE_DEFAULT_BINARY="/usr/bin/opencode"
+if [ -z "${OPENCODE_BINARY:-}" ] || [ "${OPENCODE_BINARY:-}" = "${OPENCODE_DEFAULT_BINARY}" ]; then
+    OPENCODE_UPGRADE_PATH="$HOME/.opencode/bin/opencode"
+    if [ ! -e "$OPENCODE_UPGRADE_PATH" ] && [ -x "$OPENCODE_DEFAULT_BINARY" ]; then
+        mkdir -p "$HOME/.opencode/bin"
+        ln -s "$OPENCODE_DEFAULT_BINARY" "$OPENCODE_UPGRADE_PATH"
+        [ -x /usr/bin/opencode2 ] && [ ! -e "$HOME/.opencode/bin/opencode2" ] \
+            && ln -s /usr/bin/opencode2 "$HOME/.opencode/bin/opencode2" || true
+    fi
+    if [ -x "$OPENCODE_UPGRADE_PATH" ]; then
+        OPENCODE_BINARY="$OPENCODE_UPGRADE_PATH"
+    else
+        OPENCODE_BINARY="$OPENCODE_DEFAULT_BINARY"
+    fi
+fi
+export OPENCODE_BINARY
 
 # UI password: hỗ trợ cả OPENCHAMBER_UI_PASSWORD và legacy UI_PASSWORD (tương thích upstream)
 if [ -z "${OPENCHAMBER_UI_PASSWORD:-}" ] && [ -n "${UI_PASSWORD:-}" ]; then

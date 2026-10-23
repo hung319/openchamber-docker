@@ -97,6 +97,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #     (nếu để HOME=/root và /root là volume thì installer sẽ ghi vào volume).
 #   - VERSION=.. -> ghim version bằng chính env gốc của installer.
 # Sau đó chuyển ra /usr/bin và dọn thư mục tạm.
+#
+# SYMLINK ~/.opencode/bin/opencode -> /usr/bin/opencode (BẮT BUỘC):
+#   `opencode upgrade` (và nút Update trên UI OpenChamber, vì nó chạy đúng
+#   lệnh đó không kèm --method) tự dò installation method theo ĐƯỜNG DẪN binary
+#   được gọi. Chỉ đường dẫn `$HOME/.opencode/bin/opencode` mới khớp method
+#   `curl`; gọi /usr/bin/opencode sẽ fail:
+#       "Could not detect the installation method. Pass --method to choose how
+#        to upgrade OpenCode."
+#   Symlink giữ binary thật trong image layer (/usr/bin) nhưng vẫn cho upgrade
+#   nhận diện đúng. Khi upgrade chạy, installer ghi file thật vào đúng
+#   ~/.opencode/bin/opencode (thay symlink) -> bản mới được dùng ngay vì
+#   entrypoint trỏ OPENCODE_BINARY vào đường dẫn này.
 # ---------------------------------------------------------------------------
 RUN set -eux; \
     curl -fsSL https://opencode.ai/v2/install -o /tmp/opencode-install.sh; \
@@ -109,7 +121,11 @@ RUN set -eux; \
     mv /usr/.opencode/bin/opencode /usr/bin/opencode; \
     mv /usr/.opencode/bin/opencode2 /usr/bin/opencode2; \
     rm -rf /usr/.opencode; \
-    chmod 0755 /usr/bin/opencode /usr/bin/opencode2
+    chmod 0755 /usr/bin/opencode /usr/bin/opencode2; \
+    OPENCODE_HOME="${HOME:-/root}"; \
+    mkdir -p "$OPENCODE_HOME/.opencode/bin"; \
+    ln -sfn /usr/bin/opencode "$OPENCODE_HOME/.opencode/bin/opencode"; \
+    ln -sfn /usr/bin/opencode2 "$OPENCODE_HOME/.opencode/bin/opencode2"
 
 # ---------------------------------------------------------------------------
 # GUARD: fail lúc BUILD chứ không để container chết âm thầm lúc chạy.
