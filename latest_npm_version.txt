@@ -1,2 +1,2 @@
 openchamber=2.6.1
-opencode=2.2.5
+opencode=2.2.6
