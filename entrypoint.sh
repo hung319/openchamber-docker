@@ -7,6 +7,7 @@ set -euo pipefail
 #   là PID 1 -> shutdown sạch sẽ (pattern tốt hơn daemon+logs của upstream)
 # - Sinh SSH key nếu chưa có (agent cần cho git/ssh operations)
 # - Đảm bảo OPENCODE_CONFIG_DIR được set (khớp volume ~/.config/opencode)
+# - Nối GitHub CLI vào git (gh auth setup-git) khi đã có đăng nhập / GH_TOKEN
 # - Tương thích OH_MY_OPENCODE và UI_PASSWORD alias từ upstream
 # ============================================================================
 
@@ -76,6 +77,23 @@ chmod 644 "$HOME/.ssh/id_ed25519.pub" 2>/dev/null || true
 if [ -f "$HOME/.ssh/id_ed25519.pub" ]; then
     echo "[entrypoint] SSH public key:"
     cat "$HOME/.ssh/id_ed25519.pub"
+fi
+
+# GitHub CLI: nếu đã có đăng nhập (volume ~/.config/gh từ lần `gh auth login`
+# trước) hoặc có GH_TOKEN/GITHUB_TOKEN thì cho git dùng luôn credential của gh
+# cho HTTPS -> agent clone/push repo private không cần gõ token.
+# ~/.gitconfig không nằm trong volume nên chạy lại mỗi boot; lỗi thì bỏ qua.
+if command -v gh >/dev/null 2>&1; then
+    GH_CFG_DIR="${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}"
+    if [ -n "${GH_TOKEN:-}" ] || [ -n "${GITHUB_TOKEN:-}" ] || [ -s "$GH_CFG_DIR/hosts.yml" ]; then
+        if gh auth setup-git >/dev/null 2>&1; then
+            echo "[entrypoint] GitHub CLI: git HTTPS credential helper configured"
+        else
+            echo "[entrypoint] GitHub CLI: 'gh auth setup-git' failed, continuing"
+        fi
+    else
+        echo "[entrypoint] GitHub CLI: not logged in (run 'gh auth login' in the terminal, or set GH_TOKEN)"
+    fi
 fi
 
 # LƯU Ý (core opencode v2): KHÔNG xoá cache mỗi boot nữa. Từ core v2 layout cache

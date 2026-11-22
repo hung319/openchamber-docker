@@ -3,7 +3,7 @@
 **[English](#en) · [Tiếng Việt](#vi)**
 
 Thin Docker image for [OpenChamber](https://github.com/anomalyco/openchamber) — web UI +
-[OpenCode](https://opencode.ai) agent + Chromium, packaged from the official npm release
+[OpenCode](https://opencode.ai) agent + Chromium + GitHub CLI, packaged from the official npm release
 (`@openchamber/web`), no source build.
 
 > This README is bilingual. Jump to: [English](#en) | [Tiếng Việt](#vi)
@@ -125,6 +125,7 @@ Mount these to keep configuration, sessions and logins:
 | `/root/.local/share/opencode` | `auth.json` (provider tokens), session/message database, snapshots |
 | `/root/.config/openchamber` | OpenChamber settings, chats, git identities, GitHub auth, logs |
 | `/root/.ssh` | SSH key for the agent (generated at boot if missing) |
+| `/root/.config/gh` | *(optional)* GitHub CLI login (`gh auth login`) — see [GitHub CLI](#en-gh) |
 
 The agent binary itself is in **no** volume — it is baked straight into `/usr/bin` in the image
 layer (see [why](#en-why-usrbin)). If you update OpenCode from the UI, add an optional volume for
@@ -207,10 +208,66 @@ repositories.
 <a id="en-extras"></a>
 
 - **Chromium** ships at `/usr/local/bin/chromium` (wrapped with `--no-sandbox
-  --disable-dev-shm-usage` for containers), used for browser/CDP tooling.
+  --disable-dev-shm-usage` for containers; also reachable as `google-chrome`,
+  `google-chrome-stable`, `chromium-browser`). It is what the agent browser runs on — see
+  [Agent browser](#en-browser). Playwright is **not** installed and no `PLAYWRIGHT_*` variables
+  are set.
+- **GitHub CLI (`gh`)** from the official apt repo — see [GitHub CLI](#en-gh).
 - **Python 3.12** installed via `uv` at `/usr/local/bin/python3`.
 - **`oh-my-opencode`** (optional) — set `OH_MY_OPENCODE=true`. Note that this package does **not**
   install a binary named `opencode`, so it never shadows the one in `/usr/bin`.
+
+### Agent browser (OpenChamber Browser provider)
+
+<a id="en-browser"></a>
+
+OpenChamber's built-in browser panel can only be *driven* by the desktop app: the page lives in
+the Electron renderer, so a web/Docker instance can display a page but the agent cannot click or
+read it. The official route for a server is a **Browser provider** extension: it runs headless
+Chrome on the server and answers the agent's `openchamber_web` → `browser.*` actions. This image
+ships everything such an extension needs (Chromium, the root-safe wrapper on every binary name
+extensions probe, fonts, `lsof`); the extension itself is third-party code you approve in the UI,
+so it is not baked in.
+
+With [`openchamber-server-browser`](https://github.com/JosueGalRe/openchamber-server-browser)
+(community, MIT, marked experimental by its author):
+
+1. **Settings → Extensions** → install from
+   `https://github.com/JosueGalRe/openchamber-server-browser` and approve its local service.
+2. **Settings → General → OpenChamber Tools → Browser provider** → pick **Server Browser**
+   (the dropdown is disabled until a provider extension is installed).
+3. Ask the agent to open a page with `openchamber_web`, then open **Server Browser** from the
+   panel rail to watch, take over (logins, captchas) and hand back.
+
+No `chromePath` config is needed — the extension finds `/usr/local/bin/google-chrome` on `PATH`.
+The extension is copied into OpenChamber's data folder, so keep the `/root/.config/openchamber`
+volume mounted for it to survive container recreation. Notes:
+
+- The browser runs **inside the container**: `localhost` is the container, and local/private
+  addresses are blocked by the extension until you allow them in its `config.json`.
+- Each chat's browser closes after five minutes idle and its cookies go with it.
+- Budget RAM for it: headless Chrome easily takes a few hundred MB per open browser.
+
+### GitHub CLI
+
+<a id="en-gh"></a>
+
+`gh` is preinstalled. Log in once from the OpenChamber terminal:
+
+```bash
+gh auth login
+```
+
+or pass a token: `-e GH_TOKEN=ghp_...`. Mount `/root/.config/gh` to keep the interactive login
+across container recreation:
+
+```bash
+-v gh-config:/root/.config/gh
+```
+
+At boot the entrypoint runs `gh auth setup-git` when a login or `GH_TOKEN` is present, so `git`
+over HTTPS uses the same credential. OpenChamber can also use the gh login for its GitHub features
+(the GitHub CLI switch in its Settings) instead of its own device-flow sign-in.
 
 ---
 
@@ -496,6 +553,7 @@ Nên mount để giữ config, phiên làm việc và đăng nhập:
 | `/root/.local/share/opencode` | `auth.json` (token provider), session/message database, snapshot |
 | `/root/.config/openchamber` | Setting OpenChamber, chat, git identity, GitHub auth, log |
 | `/root/.ssh` | SSH key cho agent (sinh lúc boot nếu chưa có) |
+| `/root/.config/gh` | *(tùy chọn)* Đăng nhập GitHub CLI (`gh auth login`) — xem [GitHub CLI](#vi-gh) |
 
 Binary agent **không** nằm trong volume nào — nó được bake thẳng vào `/usr/bin` trong image layer
 (xem [giải thích](#vi-why-usrbin)). Nếu bạn update OpenCode từ UI, nên thêm volume tuỳ chọn cho
@@ -575,10 +633,64 @@ Copy key đó lên GitHub/GitLab (Settings → SSH keys) để agent pull/push �
 <a id="vi-extras"></a>
 
 - **Chromium** có sẵn ở `/usr/local/bin/chromium` (kèm `--no-sandbox --disable-dev-shm-usage`
-  cho môi trường container), dùng cho browser/CDP tooling.
+  cho môi trường container; gọi được bằng cả tên `google-chrome`, `google-chrome-stable`,
+  `chromium-browser`). Đây là nền cho trình duyệt của agent — xem [Browser cho agent](#vi-browser).
+  Image **không** cài Playwright và không set biến `PLAYWRIGHT_*` nào.
+- **GitHub CLI (`gh`)** cài từ apt repo chính thức — xem [GitHub CLI](#vi-gh).
 - **Python 3.12** qua `uv` ở `/usr/local/bin/python3`.
 - **`oh-my-opencode`** (tùy chọn) — set `OH_MY_OPENCODE=true`. Lưu ý package này **không** tạo bin
   tên `opencode`, nên không che binary ở `/usr/bin`.
+
+### Browser cho agent (Browser provider của OpenChamber)
+
+<a id="vi-browser"></a>
+
+Browser panel built-in của OpenChamber chỉ **lái** được trên desktop app: trang nằm trong renderer
+Electron, nên bản web/Docker chỉ hiển thị được trang chứ agent không click/đọc được. Đường chính
+thức cho server là extension **Browser provider**: nó chạy Chrome headless ngay trên server và trả
+lời các action `openchamber_web` → `browser.*` của agent. Image này có sẵn mọi thứ extension cần
+(Chromium, wrapper chạy được dưới root cho mọi tên binary mà extension dò, font, `lsof`); bản thân
+extension là code bên thứ ba phải approve trong UI nên không bake sẵn.
+
+Với [`openchamber-server-browser`](https://github.com/JosueGalRe/openchamber-server-browser)
+(cộng đồng, MIT, tác giả ghi là experimental):
+
+1. **Settings → Extensions** → cài từ `https://github.com/JosueGalRe/openchamber-server-browser`
+   rồi approve local service của nó.
+2. **Settings → General → OpenChamber Tools → Browser provider** → chọn **Server Browser**
+   (dropdown bị khoá cho tới khi có extension provider).
+3. Bảo agent mở trang bằng `openchamber_web`, rồi mở **Server Browser** ở thanh panel bên phải để
+   xem, tự tay thao tác (đăng nhập, captcha) và trả lại cho agent.
+
+Không cần config `chromePath` — extension tự thấy `/usr/local/bin/google-chrome` trong `PATH`.
+Extension được copy vào thư mục data của OpenChamber, nên nhớ mount volume
+`/root/.config/openchamber` để tạo lại container không mất. Lưu ý:
+
+- Browser chạy **trong container**: `localhost` là container, và địa chỉ local/private bị extension
+  chặn cho tới khi cho phép trong `config.json` của nó.
+- Browser của mỗi chat tự đóng sau 5 phút không dùng, cookie mất theo.
+- Tính RAM cho nó: Chrome headless dễ ăn vài trăm MB mỗi browser đang mở.
+
+### GitHub CLI
+
+<a id="vi-gh"></a>
+
+`gh` đã cài sẵn. Đăng nhập một lần từ terminal của OpenChamber:
+
+```bash
+gh auth login
+```
+
+hoặc truyền token: `-e GH_TOKEN=ghp_...`. Mount `/root/.config/gh` để giữ đăng nhập khi tạo lại
+container:
+
+```bash
+-v gh-config:/root/.config/gh
+```
+
+Lúc boot entrypoint chạy `gh auth setup-git` nếu đã có đăng nhập hoặc `GH_TOKEN`, nên `git` qua
+HTTPS dùng chung credential đó. OpenChamber cũng dùng được đăng nhập gh cho các tính năng GitHub
+(công tắc GitHub CLI trong Settings) thay cho đăng nhập device-flow riêng.
 
 ---
 

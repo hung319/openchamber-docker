@@ -39,18 +39,31 @@ ENV PATH="/root/.local/bin:/usr/local/bin:/usr/bin:${PATH}" \
     CHROME_PATH="/usr/local/bin/chromium" \
     PUPPETEER_EXECUTABLE_PATH="/usr/local/bin/chromium" \
     PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
-    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
-    PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH="/usr/local/bin/chromium" \
     OPENCODE_BINARY="/usr/bin/opencode"
 
 WORKDIR /root
 
-# GOM LAYER: Cài hệ thống tools, Chromium + fonts (phục vụ browser & CDP tooling),
-# Python 3.12 (uv), và cài OpenChamber qua NPM (OpenCode agent cài riêng ở layer
-# dưới vì nó không đi qua npm).
+# GOM LAYER: Cài hệ thống tools, Chromium + fonts (phục vụ browser provider của
+# OpenChamber - xem khối wrapper Chromium bên dưới), GitHub CLI, Python 3.12 (uv),
+# và cài OpenChamber qua NPM (OpenCode agent cài riêng ở layer dưới vì nó không
+# đi qua npm).
+#
+# GitHub CLI (`gh`): cài từ apt repo chính thức cli.github.com chứ không lấy bản
+# của Debian trixie (2.46, cũ). OpenChamber dùng `gh` làm nguồn credential cho
+# tính năng GitHub (server/lib/github/gh-cli-credential.ts gọi
+# `gh auth token --user <login>`), agent cũng dùng `gh` để mở PR / đọc issue.
+# lsof: extension Server Browser dùng để dò dev server đang listen (thiếu thì nó
+# fallback sang /proc, có thì chính xác hơn).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl git ssh build-essential tini procps unzip psmisc tar \
+        ca-certificates curl git ssh build-essential tini procps unzip psmisc tar lsof \
         chromium fonts-liberation fonts-noto-color-emoji \
+    && mkdir -p -m 755 /etc/apt/keyrings \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y --no-install-recommends gh \
     && uv python install 3.12 \
     && ln -sf /root/.local/share/uv/python/cpython-3.12-linux-*/bin/python3.12 /usr/local/bin/python3 \
     && ln -sf /usr/local/bin/python3 /usr/local/bin/python \
@@ -135,11 +148,49 @@ RUN set -eu; \
     node -e 'const [a,b]=process.versions.node.split(".").map(Number); if(a<24||(a===24&&b<14)){console.error("FATAL: node "+process.versions.node+" < 24.14 (required by @openchamber/web engines)");process.exit(1);} console.log("node "+process.versions.node+" OK");'; \
     node -e 'const v=process.argv[1].replace(/^v/,"").split(".").map(Number); if(v[0]!==2||(v[1]===0&&v[2]<20)){console.error("FATAL: OpenCode "+process.argv[1]+" is unsupported. OpenChamber requires OpenCode >= 2.0.20");process.exit(1);} console.log("OpenCode "+process.argv[1]+" OK");' "$(/usr/bin/opencode --version | awk '{print $2}')"
 
-# Wrapper scripts cho Chromium chạy an toàn trong môi trường container (root / limited /dev/shm)
+# ---------------------------------------------------------------------------
+# Chromium cho tính năng Browser của OpenChamber (agent tự lái trình duyệt).
+#
+# Browser panel built-in của OpenChamber chỉ lái được trên DESKTOP app: trang
+# sống trong renderer Electron, server không tự thao tác được (upstream
+# server/lib/browser-control/DOCUMENTATION.md). Trên bản web/Docker, đường chính
+# thức là "Browser provider": một extension khai `provides: ["browser"]` tự chạy
+# Chrome headless ngay trên server và trả lời các action `browser.*` của tool
+# `openchamber_web` (upstream packages/sdk/GUEST_SERVICES.md).
+# Image KHÔNG bake sẵn extension (code bên thứ ba, phải được user approve trong
+# UI) - image chỉ lo phần nền để extension cài vào là chạy được ngay.
+#
+# Vì sao cần wrapper:
+#   - Container chạy root -> Chromium từ chối khởi động nếu thiếu --no-sandbox.
+#     Extension (vd. openchamber-server-browser) spawn Chrome với bộ flag riêng,
+#     KHÔNG kèm --no-sandbox, nên flag phải nằm trong wrapper.
+#   - /dev/shm của Docker mặc định 64MB -> --disable-dev-shm-usage.
+#   - Extension dò binary theo PATH với các tên google-chrome,
+#     google-chrome-stable, chromium, chromium-browser (theo thứ tự đó). Mọi tên
+#     đều phải trỏ về wrapper, và /usr/local/bin đứng trước /usr/bin trong PATH
+#     để wrapper thắng binary thật /usr/bin/chromium.
+#   - `exec` để PID không đổi: extension kill theo process group khi đóng browser.
+#
+# Không còn biến PLAYWRIGHT_*: image không cài Playwright, và OpenChamber không
+# đọc các biến đó. Agent nào tự `npm i playwright` thì trỏ executablePath về
+# /usr/local/bin/chromium.
+# ---------------------------------------------------------------------------
 RUN printf '#!/bin/sh\nexec /usr/bin/chromium --no-sandbox --disable-dev-shm-usage "$@"\n' > /usr/local/bin/chromium \
     && chmod +x /usr/local/bin/chromium \
     && ln -s /usr/local/bin/chromium /usr/local/bin/google-chrome \
+    && ln -s /usr/local/bin/chromium /usr/local/bin/google-chrome-stable \
+    && ln -s /usr/local/bin/chromium /usr/local/bin/chromium-browser \
     && ln -s /usr/local/bin/chromium /usr/local/bin/chrome
+
+# GUARD: gh có mặt, và Chromium thật sự chạy được headless dưới quyền root qua
+# wrapper (đúng cách browser provider sẽ gọi) - fail lúc build chứ không để tới
+# lúc agent mở trang mới biết.
+RUN set -eu; \
+    gh --version | head -1; \
+    command -v google-chrome; \
+    google-chrome --version; \
+    timeout 90 google-chrome --headless=new --disable-gpu --dump-dom about:blank >/dev/null; \
+    echo "chromium headless (root, no-sandbox wrapper) OK"
 
 # Entrypoint: foreground + SSH key + OPENCODE_CONFIG_DIR + OH_MY_OPENCODE
 COPY entrypoint.sh /usr/local/bin/entrypoint
@@ -147,7 +198,7 @@ RUN chmod +x /usr/local/bin/entrypoint
 
 # Metadata cho GHCR
 LABEL org.opencontainers.image.title="OpenChamber (community)" \
-      org.opencontainers.image.description="OpenChamber web UI + OpenCode agent + Chromium - npm thin image" \
+      org.opencontainers.image.description="OpenChamber web UI + OpenCode agent + Chromium + GitHub CLI - npm thin image" \
       org.opencontainers.image.source="https://github.com/hung319/openchamber-docker" \
       org.opencontainers.image.version="${OPENCHAMBER_VERSION}" \
       org.openchamber.opencode.version="${OPENCODE_VERSION}"
